@@ -1,0 +1,65 @@
+import logging
+import os
+
+from opentelemetry import metrics, trace
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+
+def configure_otel(service_name: str) -> None:
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            "deployment.environment": os.getenv("ENVIRONMENT", "local"),
+        }
+    )
+
+    tracer_provider = TracerProvider(resource=resource)
+    tracer_provider.add_span_processor(
+        BatchSpanProcessor(
+            OTLPSpanExporter(
+                endpoint=os.getenv(
+                    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                    "http://otel-collector:4318/v1/traces",
+                )
+            )
+        )
+    )
+    trace.set_tracer_provider(tracer_provider)
+
+    metric_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(
+            endpoint=os.getenv(
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "http://otel-collector:4318/v1/metrics",
+            )
+        ),
+        export_interval_millis=5000,
+    )
+    metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[metric_reader]))
+
+    logger_provider = LoggerProvider(resource=resource)
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(
+            OTLPLogExporter(
+                endpoint=os.getenv(
+                    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                    "http://otel-collector:4318/v1/logs",
+                )
+            )
+        )
+    )
+    set_logger_provider(logger_provider)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(LoggingHandler(level=logging.INFO, logger_provider=logger_provider))
